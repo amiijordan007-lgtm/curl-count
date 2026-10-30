@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Curl Counter</title>
+<style>
+:root{--bg:#f6f6f3;--card:#fff;--text:#1c1c1a;--mute:#76766f;--acc:#e8590c;--line:#e4e4de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141413;--card:#1f1f1d;--text:#f2f2ee;--mute:#9a9a92;--acc:#ff8a4c;--line:#333330;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#141413;--card:#1f1f1d;--text:#f2f2ee;--mute:#9a9a92;--acc:#ff8a4c;--line:#333330;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:480px;padding:20px 16px 32px}
+h1{font-size:18px;margin:0 0 16px;font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px;margin-bottom:14px}
+.cam{position:relative;border-radius:14px;overflow:hidden;background:#000;aspect-ratio:4/3}
+.cam video,.cam canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+.badge{position:absolute;right:10px;top:8px;z-index:2;font-size:44px;font-weight:700;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.7);font-variant-numeric:tabular-nums}
+.count{font-size:96px;font-weight:700;line-height:1;text-align:center;color:var(--acc);font-variant-numeric:tabular-nums;margin-top:12px}
+.label{text-align:center;color:var(--mute);font-size:14px}
+.row{display:flex;gap:10px;margin-top:14px}
+button{flex:1;font:inherit;font-weight:600;padding:14px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--text)}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button:active{transform:scale(.97)}
+.status{text-align:center;font-size:13px;color:var(--mute);margin-top:12px;min-height:18px}
+label{font-size:14px;color:var(--mute);display:flex;justify-content:space-between}
+input[type=range]{width:100%;margin-top:10px;accent-color:var(--acc)}
+.sets{list-style:none;margin:10px 0 0;padding:0}
+.sets li{display:flex;justify-content:space-between;padding:10px 0;border-top:1px solid var(--line);font-size:15px}
+.hint{font-size:13px;color:var(--mute);line-height:1.5;margin:10px 0 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Curl Counter</h1>
+<div class="card">
+  <div class="cam">
+    <video id="vid" playsinline muted></video>
+    <canvas id="ov"></canvas>
+    <div class="badge" id="badge"></div>
+  </div>
+  <div class="count" id="count">0</div>
+  <div class="label">reps this set</div>
+  <div class="row"><button id="minus">−1</button><button id="plus">+1</button></div>
+  <div class="row"><button class="primary" id="go">Start camera</button></div>
+  <div class="status" id="status">Prop your phone up and face the camera, side-on works best.</div>
+</div>
+<div class="card">
+  <label><span>Sensitivity</span><span id="sensVal">5</span></label>
+  <input type="range" id="sens" min="1" max="10" value="5">
+  <p class="hint">Stand still with your curling arm in frame and a plain background. Only your arm should move. Raise sensitivity if reps are missed, lower it if extras appear.</p>
+</div>
+<div class="card">
+  <div class="row" style="margin-top:0"><button id="save">Finish set</button><button id="reset">Reset</button></div>
+  <ul class="sets" id="sets"></ul>
+</div>
+</main>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var W=80,H=60,count=0,sets=[],stream=null,running=false,counting=false,raf=0,lastT=0;
+  var off=document.createElement('canvas');off.width=W;off.height=H;
+  var octx=off.getContext('2d',{willReadFrequently:true});
+  var ov=$('ov'),vctx=ov.getContext('2d');
+  var prev=null,sm=null,hi=0,lo=0,phase='down',lastRep=0;
+
+  try{var s=localStorage.getItem('curl-sets');if(s)sets=JSON.parse(s)||[]}catch(e){}
+  try{var v=localStorage.getItem('curl-sens');if(v)$('sens').value=v}catch(e){}
+  $('sensVal').textContent=$('sens').value;
+
+  function render(){
+    $('count').textContent=count;$('badge').textContent=counting?count:'';
+    var ul=$('sets');ul.innerHTML='';
+    sets.slice(-6).reverse().forEach(function(x,i){
+      var li=document.createElement('li');
+      li.innerHTML='<span>Set '+(sets.length-i)+'</span><b>'+x+' reps</b>';ul.appendChild(li);
+    });
+  }
+  function bump(n){count=Math.max(0,count+n);render();if(n>0&&navigator.vibrate){try{navigator.vibrate(25)}catch(e){}}}
+
+  function tick(t){
+    raf=requestAnimationFrame(tick);
+    if(!counting||t-lastT<50)return; lastT=t;
+    var vid=$('vid');if(!vid.videoWidth)return;
+    octx.drawImage(vid,0,0,W,H);
+    var d=octx.getImageData(0,0,W,H).data,g=new Uint8Array(W*H);
+    for(var i=0,j=0;i<d.length;i+=4,j++)g[j]=(d[i]+d[i+1]+d[i+2])/3;
+    if(!prev){prev=g;return}
+    var sens=+$('sens').value,pt=30-sens*2.2,minPix=60-sens*4,n=0,sy=0,sx=0;
+    for(var y=0;y<H;y++)for(var x=0;x<W;x++){
+      var k=y*W+x;
+      if(Math.abs(g[k]-prev[k])>pt){n++;sy+=y;sx+=x}
+    }
+    prev=g;
+    vctx.clearRect(0,0,ov.width,ov.height);
+    if(n<minPix||n>W*H*0.5)return; // too little motion, or whole scene shifting
+    var cy=sy/n/H,cx=sx/n/W;
+    sm=sm==null?cy:sm*0.6+cy*0.4;
+    if(!hi&&!lo){hi=sm;lo=sm}
+    var r=hi-lo;hi=Math.max(sm,hi-r*0.01);lo=Math.min(sm,lo+r*0.01);
+    r=hi-lo;
+    vctx.fillStyle='#ff8a4c';vctx.beginPath();
+    vctx.arc(cx*ov.width,sm*ov.height,8,0,7);vctx.fill();
+    if(r<0.07)return;
+    var mid=(hi+lo)/2,up=mid+r*0.2,low=mid-r*0.2,now=Date.now();
+    if(phase==='down'&&sm<low){phase='up'}
+    else if(phase==='up'&&sm>up&&now-lastRep>500){phase='down';lastRep=now;bump(1)}
+  }
+
+  async function start(){
+    var st=$('status');
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){st.textContent='Camera isn’t available here. Use +1 to count by tap.';return}
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
+    }catch(e){st.textContent='Camera access was blocked. Allow it in your browser, or use +1.';return}
+    var vid=$('vid');vid.srcObject=stream;await vid.play().catch(function(){});
+    ov.width=320;ov.height=240;running=true;$('go').textContent='Stop';
+    prev=null;sm=null;hi=0;lo=0;phase='down';
+    var c=3;st.textContent='Get in position… '+c;
+    var iv=setInterval(function(){
+      c--;
+      if(!running){clearInterval(iv);return}
+      if(c>0)st.textContent='Get in position… '+c;
+      else{clearInterval(iv);counting=true;st.textContent='Counting. Start curling!';render()}
+    },1000);
+    cancelAnimationFrame(raf);raf=requestAnimationFrame(tick);
+  }
+  function stop(){
+    running=false;counting=false;cancelAnimationFrame(raf);
+    if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}
+    $('vid').srcObject=null;vctx.clearRect(0,0,ov.width,ov.height);
+    $('go').textContent='Start camera';$('status').textContent='Stopped.';render();
+  }
+
+  $('plus').onclick=function(){bump(1)};
+  $('minus').onclick=function(){bump(-1)};
+  $('go').onclick=function(){running?stop():start()};
+  $('sens').oninput=function(){$('sensVal').textContent=this.value;try{localStorage.setItem('curl-sens',this.value)}catch(e){}};
+  $('save').onclick=function(){if(count>0){sets.push(count);try{localStorage.setItem('curl-sets',JSON.stringify(sets.slice(-30)))}catch(e){}}count=0;phase='down';render()};
+  $('reset').onclick=function(){count=0;render()};
+  render();
+})();
+</script>
+</body>
+</html>
