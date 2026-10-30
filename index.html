@@ -6,21 +6,21 @@
 <title>Curl Counter</title>
 <style>
 :root{--bg:#f6f6f3;--card:#fff;--text:#1c1c1a;--mute:#76766f;--acc:#e8590c;--line:#e4e4de;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141413;--card:#1f1f1d;--text:#f2f2ee;--mute:#9a9a92;--acc:#ff8a4c;--line:#333330;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#141413;--card:#1f1f1d;--text:#f2f2ee;--mute:#9a9a92;--acc:#ff8a4c;--line:#333330;color-scheme:dark}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1f1f1d;--text:#f2f2ee;--mute:#9a9a92;--acc:#ff8a4c;--line:#333330;color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center}
 main{width:100%;max-width:480px;padding:20px 16px 32px}
 h1{font-size:18px;margin:0 0 16px;font-weight:600}
 .card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px;margin-bottom:14px}
-.cam{position:relative;border-radius:14px;overflow:hidden;background:#000;aspect-ratio:4/3}
+.cam{position:relative;border-radius:14px;overflow:hidden;background:#000;aspect-ratio:3/4}
 .cam video,.cam canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-.badge{position:absolute;right:10px;top:8px;z-index:2;font-size:44px;font-weight:700;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.7);font-variant-numeric:tabular-nums}
+.badge{position:absolute;right:10px;top:8px;z-index:2;font-size:44px;font-weight:700;color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.7)}
+.ang{position:absolute;left:10px;top:12px;z-index:2;font-size:16px;font-weight:600;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.8)}
 .count{font-size:96px;font-weight:700;line-height:1;text-align:center;color:var(--acc);font-variant-numeric:tabular-nums;margin-top:12px}
 .label{text-align:center;color:var(--mute);font-size:14px}
 .row{display:flex;gap:10px;margin-top:14px}
 button{flex:1;font:inherit;font-weight:600;padding:14px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--text)}
-button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary,button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 button:active{transform:scale(.97)}
 .status{text-align:center;font-size:13px;color:var(--mute);margin-top:12px;min-height:18px}
 label{font-size:14px;color:var(--mute);display:flex;justify-content:space-between}
@@ -37,18 +37,24 @@ input[type=range]{width:100%;margin-top:10px;accent-color:var(--acc)}
   <div class="cam">
     <video id="vid" playsinline muted></video>
     <canvas id="ov"></canvas>
+    <div class="ang" id="ang"></div>
     <div class="badge" id="badge"></div>
   </div>
   <div class="count" id="count">0</div>
   <div class="label">reps this set</div>
+  <div class="row">
+    <button id="armA" class="on">Auto arm</button>
+    <button id="armL">Left</button>
+    <button id="armR">Right</button>
+  </div>
   <div class="row"><button id="minus">−1</button><button id="plus">+1</button></div>
   <div class="row"><button class="primary" id="go">Start camera</button></div>
-  <div class="status" id="status">Prop your phone up and face the camera, side-on works best.</div>
+  <div class="status" id="status">Prop your phone up so your shoulder, elbow and wrist are all in view.</div>
 </div>
 <div class="card">
-  <label><span>Sensitivity</span><span id="sensVal">5</span></label>
+  <label><span>Curl depth needed</span><span id="sensVal">5</span></label>
   <input type="range" id="sens" min="1" max="10" value="5">
-  <p class="hint">Stand still with your curling arm in frame and a plain background. Only your arm should move. Raise sensitivity if reps are missed, lower it if extras appear.</p>
+  <p class="hint">It tracks the angle at your elbow, so head and body movement are ignored. Raise the slider if reps are missed (counts shallower curls). Lower it to demand a fuller curl.</p>
 </div>
 <div class="card">
   <div class="row" style="margin-top:0"><button id="save">Finish set</button><button id="reset">Reset</button></div>
@@ -58,11 +64,12 @@ input[type=range]{width:100%;margin-top:10px;accent-color:var(--acc)}
 <script>
 (function(){
   var $=function(i){return document.getElementById(i)};
-  var W=80,H=60,count=0,sets=[],stream=null,running=false,counting=false,raf=0,lastT=0;
-  var off=document.createElement('canvas');off.width=W;off.height=H;
-  var octx=off.getContext('2d',{willReadFrequently:true});
-  var ov=$('ov'),vctx=ov.getContext('2d');
-  var prev=null,sm=null,hi=0,lo=0,phase='down',lastRep=0;
+  var VER='0.10.14';
+  var BASE='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@'+VER;
+  var MODEL='https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+  var count=0,sets=[],stream=null,running=false,counting=false,raf=0,lm=null,arm='auto';
+  var phase='down',ang=null,lastRep=0,lastVT=-1;
+  var ov=$('ov'),ctx=ov.getContext('2d');
 
   try{var s=localStorage.getItem('curl-sets');if(s)sets=JSON.parse(s)||[]}catch(e){}
   try{var v=localStorage.getItem('curl-sens');if(v)$('sens').value=v}catch(e){}
@@ -78,60 +85,101 @@ input[type=range]{width:100%;margin-top:10px;accent-color:var(--acc)}
   }
   function bump(n){count=Math.max(0,count+n);render();if(n>0&&navigator.vibrate){try{navigator.vibrate(25)}catch(e){}}}
 
-  function tick(t){
-    raf=requestAnimationFrame(tick);
-    if(!counting||t-lastT<50)return; lastT=t;
-    var vid=$('vid');if(!vid.videoWidth)return;
-    octx.drawImage(vid,0,0,W,H);
-    var d=octx.getImageData(0,0,W,H).data,g=new Uint8Array(W*H);
-    for(var i=0,j=0;i<d.length;i+=4,j++)g[j]=(d[i]+d[i+1]+d[i+2])/3;
-    if(!prev){prev=g;return}
-    var sens=+$('sens').value,pt=30-sens*2.2,minPix=60-sens*4,n=0,sy=0,sx=0;
-    for(var y=0;y<H;y++)for(var x=0;x<W;x++){
-      var k=y*W+x;
-      if(Math.abs(g[k]-prev[k])>pt){n++;sy+=y;sx+=x}
+  function angleAt(a,b,c,asp){ // angle at b, in degrees
+    var v1x=(a.x-b.x)*asp,v1y=a.y-b.y,v2x=(c.x-b.x)*asp,v2y=c.y-b.y;
+    var dot=v1x*v2x+v1y*v2y,m=Math.hypot(v1x,v1y)*Math.hypot(v2x,v2y);
+    if(!m)return null;
+    return Math.acos(Math.max(-1,Math.min(1,dot/m)))*180/Math.PI;
+  }
+  function vis(p){return p.visibility==null?1:p.visibility}
+
+  function pickArm(p){
+    var L=[p[11],p[13],p[15]],R=[p[12],p[14],p[16]];
+    if(arm==='left')return L;
+    if(arm==='right')return R;
+    var sl=vis(L[0])+vis(L[1])+vis(L[2]),sr=vis(R[0])+vis(R[1])+vis(R[2]);
+    return sl>=sr?L:R;
+  }
+
+  function loop(){
+    raf=requestAnimationFrame(loop);
+    var vid=$('vid');
+    if(!lm||!vid.videoWidth||vid.currentTime===lastVT)return;
+    lastVT=vid.currentTime;
+    var res;
+    try{res=lm.detectForVideo(vid,performance.now())}catch(e){return}
+    ctx.clearRect(0,0,ov.width,ov.height);
+    var p=res&&res.landmarks&&res.landmarks[0];
+    if(!p){$('ang').textContent='No person found';return}
+    var a=pickArm(p);
+    var ok=vis(a[0])>0.5&&vis(a[1])>0.5&&vis(a[2])>0.5;
+    // draw only the tracked arm
+    ctx.strokeStyle=ok?'#ff8a4c':'#aaa';ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=6;ctx.lineCap='round';
+    ctx.beginPath();
+    ctx.moveTo(a[0].x*ov.width,a[0].y*ov.height);
+    ctx.lineTo(a[1].x*ov.width,a[1].y*ov.height);
+    ctx.lineTo(a[2].x*ov.width,a[2].y*ov.height);ctx.stroke();
+    a.forEach(function(q){ctx.beginPath();ctx.arc(q.x*ov.width,q.y*ov.height,9,0,7);ctx.fill()});
+    if(!ok){$('ang').textContent='Arm not fully visible';return}
+    var raw=angleAt(a[0],a[1],a[2],vid.videoWidth/vid.videoHeight);
+    if(raw==null)return;
+    ang=ang==null?raw:ang*0.5+raw*0.5;
+    $('ang').textContent='Elbow '+Math.round(ang)+'°';
+    if(!counting)return;
+    var sens=+$('sens').value,curled=40+sens*5,extended=140,now=Date.now();
+    if(phase==='down'&&ang<curled){phase='up'}
+    else if(phase==='up'&&ang>extended&&now-lastRep>400){phase='down';lastRep=now;bump(1)}
+  }
+
+  async function load(){
+    if(lm)return true;
+    $('status').textContent='Loading pose model…';
+    try{
+      var mod=await import(BASE+'/+esm');
+      var fs=await mod.FilesetResolver.forVisionTasks(BASE+'/wasm');
+      var mk=function(d){return mod.PoseLandmarker.createFromOptions(fs,{
+        baseOptions:{modelAssetPath:MODEL,delegate:d},runningMode:'VIDEO',numPoses:1})};
+      try{lm=await mk('GPU')}catch(e){lm=await mk('CPU')}
+      return true;
+    }catch(e){
+      $('status').textContent='Couldn’t load the pose model. This needs internet and a normal web host (not Claude’s preview).';
+      return false;
     }
-    prev=g;
-    vctx.clearRect(0,0,ov.width,ov.height);
-    if(n<minPix||n>W*H*0.5)return; // too little motion, or whole scene shifting
-    var cy=sy/n/H,cx=sx/n/W;
-    sm=sm==null?cy:sm*0.6+cy*0.4;
-    if(!hi&&!lo){hi=sm;lo=sm}
-    var r=hi-lo;hi=Math.max(sm,hi-r*0.01);lo=Math.min(sm,lo+r*0.01);
-    r=hi-lo;
-    vctx.fillStyle='#ff8a4c';vctx.beginPath();
-    vctx.arc(cx*ov.width,sm*ov.height,8,0,7);vctx.fill();
-    if(r<0.07)return;
-    var mid=(hi+lo)/2,up=mid+r*0.2,low=mid-r*0.2,now=Date.now();
-    if(phase==='down'&&sm<low){phase='up'}
-    else if(phase==='up'&&sm>up&&now-lastRep>500){phase='down';lastRep=now;bump(1)}
   }
 
   async function start(){
     var st=$('status');
-    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){st.textContent='Camera isn’t available here. Use +1 to count by tap.';return}
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){st.textContent='Camera isn’t available here.';return}
     try{
-      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:640},height:{ideal:480}},audio:false});
-    }catch(e){st.textContent='Camera access was blocked. Allow it in your browser, or use +1.';return}
+      stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:720},height:{ideal:960}},audio:false});
+    }catch(e){st.textContent='Camera access was blocked. Allow it in your browser settings.';return}
+    if(!(await load())){stream.getTracks().forEach(function(t){t.stop()});stream=null;return}
     var vid=$('vid');vid.srcObject=stream;await vid.play().catch(function(){});
-    ov.width=320;ov.height=240;running=true;$('go').textContent='Stop';
-    prev=null;sm=null;hi=0;lo=0;phase='down';
+    ov.width=vid.videoWidth||720;ov.height=vid.videoHeight||960;
+    running=true;$('go').textContent='Stop';phase='down';ang=null;lastVT=-1;
     var c=3;st.textContent='Get in position… '+c;
     var iv=setInterval(function(){
-      c--;
-      if(!running){clearInterval(iv);return}
+      c--;if(!running){clearInterval(iv);return}
       if(c>0)st.textContent='Get in position… '+c;
       else{clearInterval(iv);counting=true;st.textContent='Counting. Start curling!';render()}
     },1000);
-    cancelAnimationFrame(raf);raf=requestAnimationFrame(tick);
+    cancelAnimationFrame(raf);raf=requestAnimationFrame(loop);
   }
   function stop(){
     running=false;counting=false;cancelAnimationFrame(raf);
     if(stream){stream.getTracks().forEach(function(t){t.stop()});stream=null}
-    $('vid').srcObject=null;vctx.clearRect(0,0,ov.width,ov.height);
-    $('go').textContent='Start camera';$('status').textContent='Stopped.';render();
+    $('vid').srcObject=null;ctx.clearRect(0,0,ov.width,ov.height);
+    $('ang').textContent='';$('go').textContent='Start camera';$('status').textContent='Stopped.';render();
   }
 
+  function setArm(a){
+    arm=a;phase='down';
+    ['A','L','R'].forEach(function(k){$('arm'+k).className=''});
+    $('arm'+(a==='auto'?'A':a==='left'?'L':'R')).className='on';
+  }
+  $('armA').onclick=function(){setArm('auto')};
+  $('armL').onclick=function(){setArm('left')};
+  $('armR').onclick=function(){setArm('right')};
   $('plus').onclick=function(){bump(1)};
   $('minus').onclick=function(){bump(-1)};
   $('go').onclick=function(){running?stop():start()};
